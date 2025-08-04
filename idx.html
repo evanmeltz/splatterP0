@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Paint Trail Prototype</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    #map { height: 100vh; width: 100%; }
+    .avatar-marker {
+      background-color: red;
+      border-radius: 50%;
+      width: 12px;
+      height: 12px;
+      display: block;
+      border: 2px solid white;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // === Editable Parameters ===
+    const TILE_SIZE_METERS = 3;        // Size of each square tile (in meters)
+    const CLAIM_RADIUS_METERS = 9;     // Radius for claiming tiles (in meters)
+    const BOARD_SIZE_METERS = 1609.34; // Board width/height (1 mile)
+    const useRealGPS = true;          // Toggle this to use real GPS
+
+    // === Fixed Parameters ===
+    const centerLat = 47.6849;
+    const centerLng = -122.1183;
+    const metersToLat = 1 / 111320;
+    const metersToLng = 1 / (40075000 * Math.cos(centerLat * Math.PI / 180) / 360);
+    const gridRadiusTiles = Math.ceil(CLAIM_RADIUS_METERS / TILE_SIZE_METERS);
+
+    const numRows = Math.floor(BOARD_SIZE_METERS / TILE_SIZE_METERS);
+    const numCols = Math.floor(BOARD_SIZE_METERS / TILE_SIZE_METERS);
+
+    const grid = [];
+    const tileSizeLat = TILE_SIZE_METERS * metersToLat;
+    const tileSizeLng = TILE_SIZE_METERS * metersToLng;
+
+    const boardMinLat = centerLat - (numRows / 2) * tileSizeLat;
+    const boardMinLng = centerLng - (numCols / 2) * tileSizeLng;
+    const boardMaxLat = boardMinLat + numRows * tileSizeLat;
+    const boardMaxLng = boardMinLng + numCols * tileSizeLng;
+
+    // Setup map
+    const map = L.map('map',
+        {
+            zoomSnap: 0.1  // allow increments of 0.1 instead of full integers
+        }
+    ).setView([centerLat, centerLng], 18);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+    subdomains: 'abcd',
+    maxZoom: 20
+    }).addTo(map);
+    
+    // Draw border
+    L.rectangle([
+      [boardMinLat, boardMinLng],
+      [boardMaxLat, boardMaxLng]
+    ], { color: 'black', weight: 2, fillOpacity: 0 }).addTo(map);
+
+    // Generate grid
+    for (let r = 0; r < numRows; r++) {
+      grid[r] = [];
+      for (let c = 0; c < numCols; c++) {
+        const lat = boardMinLat + r * tileSizeLat;
+        const lng = boardMinLng + c * tileSizeLng;
+        grid[r][c] = { claimed: false, rect: null, lat, lng };
+      }
+    }
+
+    function haversineDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const toRad = deg => deg * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2)**2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                Math.sin(dLon/2)**2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    function claimTilesNear(lat, lng) {
+      const row = Math.floor((lat - boardMinLat) / tileSizeLat);
+      const col = Math.floor((lng - boardMinLng) / tileSizeLng);
+
+      for (let dr = -gridRadiusTiles; dr <= gridRadiusTiles; dr++) {
+        for (let dc = -gridRadiusTiles; dc <= gridRadiusTiles; dc++) {
+          const r = row + dr;
+          const c = col + dc;
+          if (r >= 0 && r < numRows && c >= 0 && c < numCols) {
+            const tile = grid[r][c];
+            const tileCenterLat = tile.lat + tileSizeLat / 2;
+            const tileCenterLng = tile.lng + tileSizeLng / 2;
+            const distance = haversineDistance(lat, lng, tileCenterLat, tileCenterLng);
+            if (distance <= CLAIM_RADIUS_METERS && !tile.claimed) {
+              tile.claimed = true;
+              const bounds = [
+                [tile.lat, tile.lng],
+                [tile.lat + tileSizeLat, tile.lng + tileSizeLng]
+              ];
+              tile.rect = L.rectangle(bounds, { color: '#a0c4ff', weight: 1, fillOpacity: 1 }).addTo(map);
+            }
+          }
+        }
+      }
+    }
+
+    // Avatar marker
+    const avatarIcon = L.divIcon({
+      className: '',
+      html: '<span class="avatar-marker"></span>',
+      iconSize: [16, 16],
+      iconAnchor: [8, 8]
+    });
+    const avatar = L.marker([centerLat, centerLng], { icon: avatarIcon }).addTo(map);
+
+    function updatePosition(lat, lng) {
+      avatar.setLatLng([lat, lng]);
+      claimTilesNear(lat, lng);
+      map.panTo([lat, lng]);
+    }
+
+    function simulateWalk() {
+      let lat = centerLat;
+      let lng = centerLng;
+      let i = 0;
+      const path = setInterval(() => {
+        lat += tileSizeLat * 0.75;
+        lng += tileSizeLng * 0.75;
+        updatePosition(lat, lng);
+        i++;
+        if (i > 30) clearInterval(path);
+      }, 500);
+    }
+
+    function startGPS() {
+      navigator.geolocation.watchPosition(pos => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        updatePosition(lat, lng);
+      }, err => {
+        console.error("Geolocation error:", err);
+      }, {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 5000
+      });
+    }
+
+    // Start
+    updatePosition(centerLat, centerLng);
+    if (useRealGPS) {
+      startGPS();
+    } else {
+      simulateWalk();
+    }
+  </script>
+</body>
+</html>
