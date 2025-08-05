@@ -4,26 +4,53 @@
   <title>Paint Trail Prototype</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore-compat.js"></script>
+  <!-- Firebase (compat version for use with global namespace) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
   <style>
     #map { height: 100vh; width: 100%; }
     .avatar-marker {
-      background-color: red;
       border-radius: 50%;
       width: 12px;
       height: 12px;
       display: block;
       border: 2px solid white;
     }
+    #teamSelect {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      background: white;
+      padding: 10px;
+      border: 1px solid #ccc;
+      font-family: sans-serif;
+    }
+    #resetButton {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+      background: white;
+      padding: 10px;
+      border: 1px solid #ccc;
+      font-family: sans-serif;
+    }
   </style>
 </head>
 <body>
+  <div id="teamSelect">
+    <button onclick="selectTeam('red')">Join Red Team</button>
+    <button onclick="selectTeam('blue')">Join Blue Team</button>
+  </div>
+  <div id="resetButton">
+    <button onclick="resetBoard()">Reset Board</button>
+  </div>
   <div id="map"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // === Firebase Setup ===
+    // Firebase config and initialization
     const firebaseConfig = {
       apiKey: "AIzaSyC3hOrQI0Y3YvknYEfP4k-QsVuDmjNqiGs",
       authDomain: "splatterbattlep1.firebaseapp.com",
@@ -36,15 +63,14 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
 
-    // === Editable Parameters ===
-    const TILE_SIZE_METERS = 3;
+    // Game settings
+    const TILE_SIZE_METERS = 6; // Change this value to adjust tile size
     const CLAIM_RADIUS_METERS = 20;
     const BOARD_SIZE_METERS = 1609.34;
     const useRealGPS = false;
 
-    // === Fixed Parameters ===
-    const centerLat = 47.654;
-    const centerLng = -122.3072;
+    const centerLat = 47.6849;
+    const centerLng = -122.1183;
     const metersToLat = 1 / 111320;
     const metersToLng = 1 / (40075000 * Math.cos(centerLat * Math.PI / 180) / 360);
     const gridRadiusTiles = Math.ceil(CLAIM_RADIUS_METERS / TILE_SIZE_METERS);
@@ -61,23 +87,19 @@
     const boardMaxLat = boardMinLat + numRows * tileSizeLat;
     const boardMaxLng = boardMinLng + numCols * tileSizeLng;
 
-    // Setup map
-    const map = L.map('map', {
-      zoomSnap: 0.1
-    }).setView([centerLat, centerLng], 18);
+    let lastRow = -1, lastCol = -1;
+    let playerLat = centerLat, playerLng = centerLng;
+    let teamColor = null;
+    let avatar = null;
+    let lastFetchedAt = 0;
+
+    const map = L.map('map', { zoomSnap: 0.1 }).setView([centerLat, centerLng], 18);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 20
+      attribution: '&copy; <a href="https://carto.com/">CARTO</a>', subdomains: 'abcd', maxZoom: 20
     }).addTo(map);
 
-    // Draw border
-    L.rectangle([
-      [boardMinLat, boardMinLng],
-      [boardMaxLat, boardMaxLng]
-    ], { color: 'black', weight: 2, fillOpacity: 0 }).addTo(map);
+    L.rectangle([[boardMinLat, boardMinLng], [boardMaxLat, boardMaxLng]], { color: 'black', weight: 2, fillOpacity: 0 }).addTo(map);
 
-    // Generate grid
     for (let r = 0; r < numRows; r++) {
       grid[r] = [];
       for (let c = 0; c < numCols; c++) {
@@ -92,9 +114,7 @@
       const toRad = deg => deg * Math.PI / 180;
       const dLat = toRad(lat2 - lat1);
       const dLon = toRad(lon2 - lon1);
-      const a = Math.sin(dLat/2)**2 +
-                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-                Math.sin(dLon/2)**2;
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
       const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
       return R * c;
     }
@@ -102,6 +122,10 @@
     async function claimTilesNear(lat, lng) {
       const row = Math.floor((lat - boardMinLat) / tileSizeLat);
       const col = Math.floor((lng - boardMinLng) / tileSizeLng);
+      if (row === lastRow && col === lastCol) return;
+      lastRow = row; lastCol = col;
+
+      const batch = db.batch();
 
       for (let dr = -gridRadiusTiles; dr <= gridRadiusTiles; dr++) {
         for (let dc = -gridRadiusTiles; dc <= gridRadiusTiles; dc++) {
@@ -114,43 +138,38 @@
             const distance = haversineDistance(lat, lng, tileCenterLat, tileCenterLng);
             if (distance <= CLAIM_RADIUS_METERS && !tile.claimed) {
               tile.claimed = true;
-              const bounds = [
-                [tile.lat, tile.lng],
-                [tile.lat + tileSizeLat, tile.lng + tileSizeLng]
-              ];
-              tile.rect = L.rectangle(bounds, { color: '#a0c4ff', weight: 0, fillOpacity: 0.5 }).addTo(map);
+              const bounds = [[tile.lat, tile.lng], [tile.lat + tileSizeLat, tile.lng + tileSizeLng]];
+              tile.rect = L.rectangle(bounds, { color: teamColor, weight: 0, fillOpacity: 0.5 }).addTo(map);
 
               const tileId = `${r}_${c}`;
-              await db.collection('tiles').doc(tileId).set({
-                row: r,
-                col: c,
-                lat: tile.lat,
-                lng: tile.lng,
-                claimedBy: "player1",
+              const docRef = db.collection('tiles').doc(tileId);
+              batch.set(docRef, {
+                row: r, col: c, lat: tile.lat, lng: tile.lng,
+                claimedBy: teamColor,
                 claimedAt: Date.now()
-              });
+              }, { merge: true });
             }
           }
         }
       }
+
+      await batch.commit();
     }
 
-    // Avatar marker
-    const avatarIcon = L.divIcon({
-      className: '',
-      html: '<span class="avatar-marker"></span>',
-      iconSize: [16, 16],
-      iconAnchor: [8, 8]
-    });
-    const avatar = L.marker([centerLat, centerLng], { icon: avatarIcon }).addTo(map);
-
-    let playerLat = centerLat;
-    let playerLng = centerLng;
+    async function resetBoard() {
+      const snapshot = await db.collection('tiles').get();
+      const batch = db.batch();
+      snapshot.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+      location.reload();
+    }
 
     function updatePosition(lat, lng) {
       playerLat = lat;
       playerLng = lng;
-      avatar.setLatLng([lat, lng]);
+      if (avatar) avatar.setLatLng([lat, lng]);
       claimTilesNear(lat, lng);
       map.panTo([lat, lng]);
     }
@@ -158,22 +177,11 @@
     function startKeyboardControls() {
       document.addEventListener("keydown", (e) => {
         let moved = false;
-        if (e.key === "ArrowUp") {
-          playerLat += tileSizeLat / 8;
-          moved = true;
-        } else if (e.key === "ArrowDown") {
-          playerLat -= tileSizeLat / 8;
-          moved = true;
-        } else if (e.key === "ArrowLeft") {
-          playerLng -= tileSizeLng / 8;
-          moved = true;
-        } else if (e.key === "ArrowRight") {
-          playerLng += tileSizeLng / 8;
-          moved = true;
-        }
-        if (moved) {
-          updatePosition(playerLat, playerLng);
-        }
+        if (e.key === "ArrowUp") playerLat += tileSizeLat / 5, moved = true;
+        else if (e.key === "ArrowDown") playerLat -= tileSizeLat / 5, moved = true;
+        else if (e.key === "ArrowLeft") playerLng -= tileSizeLng / 5, moved = true;
+        else if (e.key === "ArrowRight") playerLng += tileSizeLng / 5, moved = true;
+        if (moved) updatePosition(playerLat, playerLng);
       });
     }
 
@@ -182,33 +190,48 @@
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
         updatePosition(lat, lng);
-      }, err => {
-        console.error("Geolocation error:", err);
-      }, {
-        enableHighAccuracy: true,
-        maximumAge: 0,
-        timeout: 5000
+      }, err => console.error("Geolocation error:", err), {
+        enableHighAccuracy: true, maximumAge: 0, timeout: 5000
       });
     }
 
-    // Load claimed tiles from backend first
-    db.collection('tiles').get().then(snapshot => {
-      snapshot.forEach(doc => {
-        const { row, col, lat, lng } = doc.data();
-        grid[row][col].claimed = true;
-        const bounds = [
-          [lat, lng],
-          [lat + tileSizeLat, lng + tileSizeLng]
-        ];
-        grid[row][col].rect = L.rectangle(bounds, { color: '#a0c4ff', weight: 0, fillOpacity: 0.5 }).addTo(map);
+    function startSyncLoop() {
+      setInterval(async () => {
+        const snapshot = await db.collection('tiles')
+          .where('claimedAt', '>', lastFetchedAt)
+          .get();
+
+        snapshot.forEach(doc => {
+          const { row, col, lat, lng, claimedBy } = doc.data();
+          if (!grid[row][col].claimed) {
+            grid[row][col].claimed = true;
+            const bounds = [[lat, lng], [lat + tileSizeLat, lng + tileSizeLng]];
+            grid[row][col].rect = L.rectangle(bounds, { color: claimedBy, weight: 0, fillOpacity: 0.5 }).addTo(map);
+          }
+        });
+
+        lastFetchedAt = Date.now();
+      }, 5000);
+    }
+
+    function selectTeam(color) {
+      teamColor = color;
+      document.getElementById('teamSelect').style.display = 'none';
+
+      const avatarIcon = L.divIcon({
+        className: '',
+        html: `<span class="avatar-marker" style="background-color: ${teamColor}"></span>`,
+        iconSize: [16, 16],
+        iconAnchor: [8, 8]
       });
+
+      avatar = L.marker([centerLat, centerLng], { icon: avatarIcon }).addTo(map);
+
       updatePosition(centerLat, centerLng);
-      if (useRealGPS) {
-        startGPS();
-      } else {
-        startKeyboardControls();
-      }
-    });
+      if (useRealGPS) startGPS();
+      else startKeyboardControls();
+      startSyncLoop();
+    }
   </script>
 </body>
 </html>
