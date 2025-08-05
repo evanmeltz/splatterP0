@@ -1,12 +1,14 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Paint Trail Prototype</title>
+  <title>Spline-Based Paint Trail</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <!-- Firebase (compat version for use with global namespace) -->
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
     #map { height: 100vh; width: 100%; }
     .avatar-marker {
@@ -16,26 +18,16 @@
       display: block;
       border: 2px solid white;
     }
-    #teamSelect {
+    #teamSelect, #resetButton {
       position: absolute;
-      top: 10px;
-      left: 10px;
       z-index: 1000;
       background: white;
       padding: 10px;
       border: 1px solid #ccc;
       font-family: sans-serif;
     }
-    #resetButton {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      z-index: 1000;
-      background: white;
-      padding: 10px;
-      border: 1px solid #ccc;
-      font-family: sans-serif;
-    }
+    #teamSelect { top: 10px; left: 10px; }
+    #resetButton { top: 10px; right: 10px; }
   </style>
 </head>
 <body>
@@ -48,9 +40,7 @@
   </div>
   <div id="map"></div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // Firebase config and initialization
     const firebaseConfig = {
       apiKey: "AIzaSyC3hOrQI0Y3YvknYEfP4k-QsVuDmjNqiGs",
       authDomain: "splatterbattlep1.firebaseapp.com",
@@ -63,175 +53,150 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
 
-    // Game settings
-    const TILE_SIZE_METERS = 6; // Change this value to adjust tile size
-    const CLAIM_RADIUS_METERS = 20;
-    const BOARD_SIZE_METERS = 1609.34;
     const useRealGPS = false;
-
-    const centerLat = 47.6849;
-    const centerLng = -122.1183;
-    const metersToLat = 1 / 111320;
-    const metersToLng = 1 / (40075000 * Math.cos(centerLat * Math.PI / 180) / 360);
-    const gridRadiusTiles = Math.ceil(CLAIM_RADIUS_METERS / TILE_SIZE_METERS);
-
-    const numRows = Math.floor(BOARD_SIZE_METERS / TILE_SIZE_METERS);
-    const numCols = Math.floor(BOARD_SIZE_METERS / TILE_SIZE_METERS);
-
-    const grid = [];
-    const tileSizeLat = TILE_SIZE_METERS * metersToLat;
-    const tileSizeLng = TILE_SIZE_METERS * metersToLng;
-
-    const boardMinLat = centerLat - (numRows / 2) * tileSizeLat;
-    const boardMinLng = centerLng - (numCols / 2) * tileSizeLng;
-    const boardMaxLat = boardMinLat + numRows * tileSizeLat;
-    const boardMaxLng = boardMinLng + numCols * tileSizeLng;
-
-    let lastRow = -1, lastCol = -1;
-    let playerLat = centerLat, playerLng = centerLng;
-    let teamColor = null;
-    let avatar = null;
-    let lastFetchedAt = 0;
-
-    const map = L.map('map', { zoomSnap: 0.1 }).setView([centerLat, centerLng], 18);
+    const centerLat = 47.6849, centerLng = -122.1183;
+    const map = L.map('map').setView([centerLat, centerLng], 18);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; <a href="https://carto.com/">CARTO</a>', subdomains: 'abcd', maxZoom: 20
     }).addTo(map);
 
-    L.rectangle([[boardMinLat, boardMinLng], [boardMaxLat, boardMaxLng]], { color: 'black', weight: 2, fillOpacity: 0 }).addTo(map);
+    let teamColor = null;
+    let avatar = null;
+    let playerTrail = [];
+    let lastUploadTime = 0;
 
-    for (let r = 0; r < numRows; r++) {
-      grid[r] = [];
-      for (let c = 0; c < numCols; c++) {
-        const lat = boardMinLat + r * tileSizeLat;
-        const lng = boardMinLng + c * tileSizeLng;
-        grid[r][c] = { claimed: false, rect: null, lat, lng };
+    const trailsLayer = L.layerGroup().addTo(map);
+
+    function drawArea(geojson, color) {
+      if (!geojson) return;
+      L.geoJSON(geojson, {
+        style: { color: color, weight: 1, fillOpacity: 0.4 }
+      }).addTo(trailsLayer);
+    }
+
+    async function fetchAndDrawAllTeams() {
+      trailsLayer.clearLayers();
+      const teams = ["red", "blue"];
+      for (const team of teams) {
+        const merged = await fetchTeamGeometry(team);
+        drawArea(merged, team);
+        if (team === teamColor && merged) {
+          const m2 = turf.area(merged);
+          console.log(`Team ${team} controls ~${Math.round(m2)} m²`);
+        }
       }
     }
 
-    function haversineDistance(lat1, lon1, lat2, lon2) {
-      const R = 6371000;
-      const toRad = deg => deg * Math.PI / 180;
-      const dLat = toRad(lat2 - lat1);
-      const dLon = toRad(lon2 - lon1);
-      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c;
-    }
-
-    async function claimTilesNear(lat, lng) {
-      const row = Math.floor((lat - boardMinLat) / tileSizeLat);
-      const col = Math.floor((lng - boardMinLng) / tileSizeLng);
-      if (row === lastRow && col === lastCol) return;
-      lastRow = row; lastCol = col;
-
-      const batch = db.batch();
-
-      for (let dr = -gridRadiusTiles; dr <= gridRadiusTiles; dr++) {
-        for (let dc = -gridRadiusTiles; dc <= gridRadiusTiles; dc++) {
-          const r = row + dr;
-          const c = col + dc;
-          if (r >= 0 && r < numRows && c >= 0 && c < numCols) {
-            const tile = grid[r][c];
-            const tileCenterLat = tile.lat + tileSizeLat / 2;
-            const tileCenterLng = tile.lng + tileSizeLng / 2;
-            const distance = haversineDistance(lat, lng, tileCenterLat, tileCenterLng);
-            if (distance <= CLAIM_RADIUS_METERS && !tile.claimed) {
-              tile.claimed = true;
-              const bounds = [[tile.lat, tile.lng], [tile.lat + tileSizeLat, tile.lng + tileSizeLng]];
-              tile.rect = L.rectangle(bounds, { color: teamColor, weight: 0, fillOpacity: 0.5 }).addTo(map);
-
-              const tileId = `${r}_${c}`;
-              const docRef = db.collection('tiles').doc(tileId);
-              batch.set(docRef, {
-                row: r, col: c, lat: tile.lat, lng: tile.lng,
-                claimedBy: teamColor,
-                claimedAt: Date.now()
-              }, { merge: true });
-            }
+    async function fetchTeamGeometry(team) {
+      const snapshot = await db.collection("trails").where("team", "==", team).get();
+      const buffers = [];
+      snapshot.forEach(doc => {
+        const { path } = doc.data();
+        if (Array.isArray(path) && path.length >= 2) {
+          const coords = path.map(p => [p.lng, p.lat]);
+          const line = turf.lineString(coords);
+          try {
+            const buffer = turf.buffer(line, 10, { units: 'meters' });
+            if (buffer) buffers.push(turf.cleanCoords(buffer));
+          } catch (e) {
+            console.warn("Buffering failed", e);
+          }
+        }
+      });
+      let merged = null;
+      for (const geom of buffers) {
+        if (!merged) merged = geom;
+        else {
+          try {
+            merged = turf.union(merged, geom);
+          } catch (e) {
+            console.warn("Union failed", e);
           }
         }
       }
-
-      await batch.commit();
+      return merged;
     }
 
-    async function resetBoard() {
-      const snapshot = await db.collection('tiles').get();
-      const batch = db.batch();
-      snapshot.forEach(doc => {
-        batch.delete(doc.ref);
+    async function uploadTrail() {
+      if (playerTrail.length < 2) return;
+      const now = Date.now();
+      if (now - lastUploadTime < 3000) return;
+      lastUploadTime = now;
+
+      const docRef = db.collection("trails").doc();
+      await docRef.set({
+        team: teamColor,
+        path: playerTrail.map(p => ({ lat: p[0], lng: p[1] })),
+        timestamp: now
       });
-      await batch.commit();
-      location.reload();
+
+      playerTrail = [];
     }
 
-    function updatePosition(lat, lng) {
-      playerLat = lat;
-      playerLng = lng;
+    async function updatePosition(lat, lng) {
+      if (!teamColor) return;
+
+      playerTrail.push([lat, lng]);
       if (avatar) avatar.setLatLng([lat, lng]);
-      claimTilesNear(lat, lng);
       map.panTo([lat, lng]);
+
+      await uploadTrail();
     }
 
     function startKeyboardControls() {
       document.addEventListener("keydown", (e) => {
         let moved = false;
-        if (e.key === "ArrowUp") playerLat += tileSizeLat / 5, moved = true;
-        else if (e.key === "ArrowDown") playerLat -= tileSizeLat / 5, moved = true;
-        else if (e.key === "ArrowLeft") playerLng -= tileSizeLng / 5, moved = true;
-        else if (e.key === "ArrowRight") playerLng += tileSizeLng / 5, moved = true;
-        if (moved) updatePosition(playerLat, playerLng);
+        let lat = avatar.getLatLng().lat;
+        let lng = avatar.getLatLng().lng;
+        const delta = 0.00005; // ~5m
+        if (e.key === "ArrowUp") lat += delta, moved = true;
+        else if (e.key === "ArrowDown") lat -= delta, moved = true;
+        else if (e.key === "ArrowLeft") lng -= delta, moved = true;
+        else if (e.key === "ArrowRight") lng += delta, moved = true;
+        if (moved) updatePosition(lat, lng);
       });
     }
 
-    function startGPS() {
-      navigator.geolocation.watchPosition(pos => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        updatePosition(lat, lng);
-      }, err => console.error("Geolocation error:", err), {
-        enableHighAccuracy: true, maximumAge: 0, timeout: 5000
+    function startLiveSync() {
+      db.collection("trails").onSnapshot(() => {
+        fetchAndDrawAllTeams();
       });
     }
 
-    function startSyncLoop() {
-      setInterval(async () => {
-        const snapshot = await db.collection('tiles')
-          .where('claimedAt', '>', lastFetchedAt)
-          .get();
-
-        snapshot.forEach(doc => {
-          const { row, col, lat, lng, claimedBy } = doc.data();
-          if (!grid[row][col].claimed) {
-            grid[row][col].claimed = true;
-            const bounds = [[lat, lng], [lat + tileSizeLat, lng + tileSizeLng]];
-            grid[row][col].rect = L.rectangle(bounds, { color: claimedBy, weight: 0, fillOpacity: 0.5 }).addTo(map);
-          }
-        });
-
-        lastFetchedAt = Date.now();
-      }, 5000);
-    }
-
-    function selectTeam(color) {
+    async function selectTeam(color) {
       teamColor = color;
       document.getElementById('teamSelect').style.display = 'none';
-
       const avatarIcon = L.divIcon({
         className: '',
         html: `<span class="avatar-marker" style="background-color: ${teamColor}"></span>`,
         iconSize: [16, 16],
         iconAnchor: [8, 8]
       });
-
       avatar = L.marker([centerLat, centerLng], { icon: avatarIcon }).addTo(map);
 
       updatePosition(centerLat, centerLng);
       if (useRealGPS) startGPS();
       else startKeyboardControls();
-      startSyncLoop();
     }
+
+    function startGPS() {
+      navigator.geolocation.watchPosition(pos => {
+        updatePosition(pos.coords.latitude, pos.coords.longitude);
+      }, err => console.error("GPS Error", err), {
+        enableHighAccuracy: true, maximumAge: 0, timeout: 5000
+      });
+    }
+
+    function resetBoard() {
+      db.collection("trails").get().then(snapshot => {
+        const batch = db.batch();
+        snapshot.forEach(doc => batch.delete(doc.ref));
+        batch.commit().then(() => location.reload());
+      });
+    }
+
+    fetchAndDrawAllTeams();
+    startLiveSync();
   </script>
 </body>
 </html>
