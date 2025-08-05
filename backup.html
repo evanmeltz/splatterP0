@@ -1,11 +1,10 @@
+<!--
 <!DOCTYPE html>
 <html>
 <head>
   <title>Paint Trail Prototype</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore.js"></script>
   <style>
     #map { height: 100vh; width: 100%; }
     .avatar-marker {
@@ -23,24 +22,11 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // === Firebase Setup ===
-    const firebaseConfig = {
-      apiKey: "AIzaSyC3hOrQI0Y3YvknYEfP4k-QsVuDmjNqiGs",
-      authDomain: "splatterbattlep1.firebaseapp.com",
-      projectId: "splatterbattlep1",
-      storageBucket: "splatterbattlep1.firebasestorage.app",
-      messagingSenderId: "481770863921",
-      appId: "1:481770863921:web:0286b9918a3efbb6020410",
-      measurementId: "G-8P8WGL35CK"
-    };
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.firestore();
-
     // === Editable Parameters ===
-    const TILE_SIZE_METERS = 3;
-    const CLAIM_RADIUS_METERS = 20;
-    const BOARD_SIZE_METERS = 1609.34;
-    const useRealGPS = false;
+    const TILE_SIZE_METERS = 3;        // Size of each square tile (in meters)
+    const CLAIM_RADIUS_METERS = 20;     // Radius for claiming tiles (in meters)
+    const BOARD_SIZE_METERS = 1609.34; // Board width/height (1 mile)
+    const useRealGPS = false;          // Toggle this to use real GPS
 
     // === Fixed Parameters ===
     const centerLat = 47.6849;
@@ -62,15 +48,17 @@
     const boardMaxLng = boardMinLng + numCols * tileSizeLng;
 
     // Setup map
-    const map = L.map('map', {
-      zoomSnap: 0.1
-    }).setView([centerLat, centerLng], 18);
+    const map = L.map('map',
+        {
+            zoomSnap: 0.1  // allow increments of 0.1 instead of full integers
+        }
+    ).setView([centerLat, centerLng], 18);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 20
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+    subdomains: 'abcd',
+    maxZoom: 20
     }).addTo(map);
-
+    
     // Draw border
     L.rectangle([
       [boardMinLat, boardMinLng],
@@ -99,7 +87,7 @@
       return R * c;
     }
 
-    async function claimTilesNear(lat, lng) {
+    function claimTilesNear(lat, lng) {
       const row = Math.floor((lat - boardMinLat) / tileSizeLat);
       const col = Math.floor((lng - boardMinLng) / tileSizeLng);
 
@@ -119,16 +107,6 @@
                 [tile.lat + tileSizeLat, tile.lng + tileSizeLng]
               ];
               tile.rect = L.rectangle(bounds, { color: '#a0c4ff', weight: 0, fillOpacity: 0.5 }).addTo(map);
-
-              const tileId = `${r}_${c}`;
-              await db.collection('tiles').doc(tileId).set({
-                row: r,
-                col: c,
-                lat: tile.lat,
-                lng: tile.lng,
-                claimedBy: "player1",
-                claimedAt: Date.now()
-              });
             }
           }
         }
@@ -177,24 +155,14 @@
       });
     }
 
-    // Load claimed tiles from backend first
-    db.collection('tiles').get().then(snapshot => {
-      snapshot.forEach(doc => {
-        const { row, col, lat, lng } = doc.data();
-        grid[row][col].claimed = true;
-        const bounds = [
-          [lat, lng],
-          [lat + tileSizeLat, lng + tileSizeLng]
-        ];
-        grid[row][col].rect = L.rectangle(bounds, { color: '#a0c4ff', weight: 0, fillOpacity: 0.5 }).addTo(map);
-      });
-      updatePosition(centerLat, centerLng);
-      if (useRealGPS) {
-        startGPS();
-      } else {
-        simulateWalk();
-      }
-    });
+    // Start
+    updatePosition(centerLat, centerLng);
+    if (useRealGPS) {
+      startGPS();
+    } else {
+      simulateWalk();
+    }
   </script>
 </body>
 </html>
+-->
