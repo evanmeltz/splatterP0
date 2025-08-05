@@ -144,23 +144,37 @@
     });
     const avatar = L.marker([centerLat, centerLng], { icon: avatarIcon }).addTo(map);
 
+    let playerLat = centerLat;
+    let playerLng = centerLng;
+
     function updatePosition(lat, lng) {
+      playerLat = lat;
+      playerLng = lng;
       avatar.setLatLng([lat, lng]);
       claimTilesNear(lat, lng);
       map.panTo([lat, lng]);
     }
 
-    function simulateWalk() {
-      let lat = centerLat;
-      let lng = centerLng;
-      let i = 0;
-      const path = setInterval(() => {
-        lat += tileSizeLat * 0.75;
-        lng += tileSizeLng * 0.75;
-        updatePosition(lat, lng);
-        i++;
-        if (i > 30) clearInterval(path);
-      }, 500);
+    function startKeyboardControls() {
+      document.addEventListener("keydown", (e) => {
+        let moved = false;
+        if (e.key === "ArrowUp") {
+          playerLat += tileSizeLat / 8;
+          moved = true;
+        } else if (e.key === "ArrowDown") {
+          playerLat -= tileSizeLat / 8;
+          moved = true;
+        } else if (e.key === "ArrowLeft") {
+          playerLng -= tileSizeLng / 8;
+          moved = true;
+        } else if (e.key === "ArrowRight") {
+          playerLng += tileSizeLng / 8;
+          moved = true;
+        }
+        if (moved) {
+          updatePosition(playerLat, playerLng);
+        }
+      });
     }
 
     function startGPS() {
@@ -192,7 +206,7 @@
       if (useRealGPS) {
         startGPS();
       } else {
-        simulateWalk();
+        startKeyboardControls();
       }
     });
   </script>
